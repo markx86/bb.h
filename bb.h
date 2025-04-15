@@ -239,8 +239,7 @@ static void _bb_rebuild_if_needed(char** argv) {
 	cmd = bb_cmd_new();
 	while (*argv != NULL)
 		bb_cmd_append_args(&cmd, *(argv++));
-	bb_cmd_run(&cmd);
-	exit(EXIT_SUCCESS);
+	exit(bb_cmd_run(&cmd));
 }
 
 bb_string_t bb_string_new(size_t initial_capacity) {
@@ -281,13 +280,13 @@ void bb_string_append(bb_string_t* dst, char c) {
 
 void bb_string_destroy(bb_string_t* str) {
 	free(str->cstr);
-	memset(str, 0, sizeof(bb_string_t));
+	memset(str, 0, sizeof(*str));
 }
 
 void bb_file_copy(const char* src_path, const char* dst_path) {
 	FILE *src, *dst;
 	size_t bytes_read;
-	bb_string_t buffer;
+	char buffer[4096];
 
 	src = fopen(src_path, "r");
 	if (src == NULL)
@@ -297,9 +296,8 @@ void bb_file_copy(const char* src_path, const char* dst_path) {
 	if (dst == NULL)
 		goto fail;
 
-	buffer = bb_string_new(4096);
-	while ((bytes_read = fread(buffer.cstr, 1, buffer.capacity, src)) > 0) {
-		if (fwrite(buffer.cstr, 1, bytes_read, dst) < bytes_read)
+	while ((bytes_read = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+		if (fwrite(buffer, 1, bytes_read, dst) < bytes_read)
 			goto fail;
 	}
 
@@ -424,7 +422,7 @@ static bb_proc_t _bb_cmd_execute(bb_cmd_t* cmd, va_list ap) {
 	bb_proc_t proc;
 	bb_string_t cmdline, cmdenv, error;
 	char **argv, **envp;
-	
+
 	cmdline = _bb_string_from_format(cmd->argv.cstr, ap);
 	cmdenv = _bb_string_from_format(cmd->envp.cstr, ap);
 	bb_info("Executing: %s", cmdline.cstr);
@@ -461,7 +459,7 @@ static bb_proc_t _bb_cmd_execute(bb_cmd_t* cmd, va_list ap) {
 	bb_string_destroy(&cmdenv);
 
 	bb_info("- as process: %llu", (bb_ull_t) proc);
-	
+
 	return proc;
 
 fail:
@@ -492,17 +490,17 @@ int _bb_cmd_run(bb_cmd_t* cmd, ...) {
 void bb_cmd_destroy(bb_cmd_t* cmd) {
 	bb_string_destroy(&cmd->argv);
 	bb_string_destroy(&cmd->envp);
-	memset(cmd, 0, sizeof(bb_cmd_t));
+	memset(cmd, 0, sizeof(*cmd));
 }
 
-extern int bb_main(int argc, char** argv);
+extern int bb_main(int argc, char** argv, char** envp);
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv, char** envp) {
 	assert(argc >= 1 && "Fix your libc implementation");
 
 	_bb_rebuild_if_needed(argv);
 
-	return bb_main(argc, argv);
+	return bb_main(argc, argv, envp);
 }
 
 #endif
