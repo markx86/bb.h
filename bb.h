@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #if defined(BB_PLATFORM_WINDOWS)
 #	include <windows.h>
@@ -64,6 +65,11 @@
 		fprintf(stderr, BB_CRIT "[CRIT]" BB_RESET " " msg "\n", ##__VA_ARGS__);	\
 		exit(EXIT_FAILURE);																											\
 	} while (0)
+#define bb_assert(x) 										\
+	do {							 										\
+		if (!(x))				 										\
+			bb_crit("Assertion failed: " #x); \
+	} while (0)
 
 #ifndef BB_STRING_MIN_CAPACITY
 #	define BB_STRING_MIN_CAPACITY 64
@@ -73,7 +79,7 @@ typedef struct {
 	size_t capacity;
 	size_t length;
 	char* cstr;
-} bb_string_t;
+} *bb_string_t;
 
 typedef struct bb_list {
 	struct bb_list* next;
@@ -81,16 +87,12 @@ typedef struct bb_list {
 	void* elem;
 } bb_list_t;
 
-struct bb_target;
-
-typedef void (*bb_target_run_t)(struct bb_target*);
-
 typedef struct {
 	int argc;
 	int envc;
 	bb_string_t argv;
 	bb_string_t envp;
-} bb_cmd_t;
+} *bb_cmd_t;
 
 #if defined(BB_PLATFORM_LINUX) || defined(BB_PLATFORM_APPLE)
 	typedef pid_t bb_proc_t;
@@ -103,8 +105,8 @@ typedef struct {
 bb_string_t bb_string_new(size_t initial_capacity);
 #define bb_string_default() bb_string_new(0)
 bb_string_t bb_string_from_cstr(const char* cstr);
-void bb_string_concat(bb_string_t* dst, const char* src);
-void bb_string_append(bb_string_t* dst, char c);
+void bb_string_concat(bb_string_t dst, const char* src);
+void bb_string_append(bb_string_t dst, char c);
 void bb_string_destroy(bb_string_t* str);
 
 void bb_file_copy(const char* src_path, const char* dst_path);
@@ -112,21 +114,51 @@ void bb_file_copy(const char* src_path, const char* dst_path);
 char* bb_args_next(int* argc, char*** argv);
 
 bb_cmd_t bb_cmd_new(void);
-void _bb_cmd_append_args(bb_cmd_t* cmd, ...);
+void _bb_cmd_append_args(bb_cmd_t cmd, ...);
 #define bb_cmd_append_args(cmd, ...) \
 	_bb_cmd_append_args(cmd, ##__VA_ARGS__, NULL)
-void _bb_cmd_append_envs(bb_cmd_t* cmd, ...);
+void _bb_cmd_append_envs(bb_cmd_t cmd, ...);
 #define bb_cmd_append_envs(cmd, ...) \
 	_bb_cmd_append_envs(cmd, ##__VA_ARGS__, NULL)
-int _bb_cmd_run(bb_cmd_t* cmd, ...);
+int _bb_cmd_run(bb_cmd_t cmd, ...);
 #define bb_cmd_run(cmd, ...) \
 	_bb_cmd_run(cmd, ##__VA_ARGS__, NULL)
-bb_proc_t _bb_cmd_run_async(bb_cmd_t* cmd, ...);
+bb_proc_t _bb_cmd_run_async(bb_cmd_t cmd, ...);
 #define bb_cmd_run_async(cmd, ...) \
 	_bb_cmd_run_async(cmd, ##__VA_ARGS__, NULL)
 int bb_cmd_wait(bb_proc_t proc);
 void bb_cmd_destroy(bb_cmd_t* cmd);
-bb_string_t bb_cmd_to_string(bb_cmd_t* cmd);
+bb_string_t bb_cmd_to_string(bb_cmd_t cmd);
+
+static inline void* bb_malloc(size_t size) {
+	void* buffer;
+	bb_assert(size > 0);
+	buffer = malloc(size);
+	bb_assert(buffer != NULL);
+	return buffer;
+}
+
+static inline void* bb_zalloc(size_t size) {
+	void* buffer = bb_malloc(size);
+	memset(buffer, 0, size);
+	return buffer;
+}
+
+static inline void* bb_realloc(void* buffer, size_t size) {
+	bb_assert(size > 0); // Do not allow free() by realloc()
+	bb_assert(buffer != NULL); // Do not allow malloc() by realloc()
+	buffer = realloc(buffer, size);
+	bb_assert(buffer != NULL);
+	return buffer;
+}
+
+static inline void bb_free(void* ptr) {
+	void** buffer = (void**)ptr;
+	bb_assert(buffer != NULL);
+	bb_assert(*buffer != NULL);
+	free(*buffer);
+	*buffer = NULL;
+}
 
 #ifdef BB_IMPLEMENTATION
 
@@ -147,8 +179,6 @@ bb_string_t bb_cmd_to_string(bb_cmd_t* cmd);
 #endif
 
 #include <stdarg.h>
-#include <string.h>
-#include <assert.h>
 #include <errno.h>
 
 #if defined(BB_PLATFORM_LINUX) || defined(BB_PLATFORM_APPLE)
@@ -157,10 +187,16 @@ bb_string_t bb_cmd_to_string(bb_cmd_t* cmd);
 #	include <unistd.h>
 #endif
 
-typedef unsigned long long bb_ull_t;
-
 #define BB_UNIMPLEMENTED_STUB() \
 	bb_crit("%s() unimplemented for this platform", __func__)
+
+static inline unsigned int _bb_proc_id(bb_proc_t handle) {
+#ifdef BB_PLATFORM_WINDOWS
+	return (unsigned int)GetProcessId(handle);
+#else
+	return (unsigned int)handle;
+#endif
+}
 
 static bb_string_t _bb_strerror(void) {
 	bb_string_t error_str;
@@ -187,9 +223,9 @@ static bb_string_t _bb_to_windows_path(const char* path) {
 	if (strlen(path) == 0)
 		return str;
 	if (path[0] == '/')
-		bb_string_concat(&str, "C:");
-	bb_string_concat(&str, path);
-	for (char* ptr = str.cstr; *ptr != '\0'; ++ptr) {
+		bb_string_concat(str, "C:");
+	bb_string_concat(str, path);
+	for (char* ptr = str->cstr; *ptr != '\0'; ++ptr) {
 		if (*ptr == '/')
 			*ptr = '\\';
 	}
@@ -203,7 +239,7 @@ static time_t _bb_file_last_modification_time(const char* path) {
 	WIN32_FILE_ATTRIBUTE_DATA file_attr_data;
 	bb_string_t windows_path = _bb_to_windows_path(path);
 	if (GetFileAttributesExA(
-				windows_path.cstr,
+				windows_path->cstr,
 				GetFileExInfoStandard,
 				&file_attr_data)) {
 		bb_string_destroy(&windows_path);
@@ -219,74 +255,87 @@ static time_t _bb_file_last_modification_time(const char* path) {
 		return info.st_mtime;
 #endif
 	error = _bb_strerror();
-	bb_crit("Could not get access time for %s: %s", path, error.cstr);
+	bb_crit("Could not get access time for %s: %s", path, error->cstr);
 }
 
 static void _bb_rebuild_if_needed(char** argv) {
 	bb_cmd_t cmd;
 	time_t bin, src;
+	bb_assert(argv != NULL);
 	bin = _bb_file_last_modification_time(argv[0]);
 	src = _bb_file_last_modification_time(BB_SOURCE);
 	if (src < bin)
 		return;
 	bb_info("Rebuilding %s...", BB_SOURCE);
 	cmd = bb_cmd_new();
-	bb_cmd_append_args(&cmd, BB_DEFAULT_CC);
-	bb_cmd_append_args(&cmd, BB_REBUILD_ARGS);
-	if (bb_cmd_run(&cmd) != 0)
+	bb_cmd_append_args(cmd, BB_DEFAULT_CC);
+	bb_cmd_append_args(cmd, BB_REBUILD_ARGS);
+	if (bb_cmd_run(cmd) != 0)
 		bb_crit("Could not rebuild %s", BB_SOURCE);
 	bb_cmd_destroy(&cmd);
 	cmd = bb_cmd_new();
 	while (*argv != NULL)
-		bb_cmd_append_args(&cmd, *(argv++));
-	exit(bb_cmd_run(&cmd));
+		bb_cmd_append_args(cmd, *(argv++));
+	exit(bb_cmd_run(cmd));
 }
 
 bb_string_t bb_string_new(size_t initial_capacity) {
-	bb_string_t str;
-	str.capacity =
+	bb_string_t str = bb_malloc(sizeof(*str));
+	str->capacity =
 		initial_capacity < BB_STRING_MIN_CAPACITY ?
 		BB_STRING_MIN_CAPACITY : initial_capacity;
-	str.length = 0;
-	str.cstr = calloc(1, str.capacity);
+	str->length = 0;
+	str->cstr = bb_zalloc(str->capacity);
 	return str;
 }
 
 bb_string_t bb_string_from_cstr(const char* cstr) {
-	bb_string_t str = bb_string_new(strlen(cstr) + 1);
-	bb_string_concat(&str, cstr);
+	bb_string_t str;
+	bb_assert(cstr != NULL);
+	str = bb_string_new(strlen(cstr) + 1);
+	bb_string_concat(str, cstr);
 	return str;
 }
 
-void bb_string_concat(bb_string_t* dst, const char* src) {
-	size_t needed_capacity, src_length = strlen(src);
+void bb_string_concat(bb_string_t dst, const char* src) {
+	size_t needed_capacity, src_length;
+	bb_assert(dst != NULL);
+	bb_assert(src != NULL);
+	src_length = strlen(src);
 	needed_capacity = dst->length + src_length + 1;
 	if (needed_capacity > dst->capacity) {
 		dst->capacity = needed_capacity;
-		dst->cstr = realloc(dst->cstr, dst->capacity);
+		dst->cstr = bb_realloc(dst->cstr, dst->capacity);
 	}
 	strcpy(&dst->cstr[dst->length], src);
 	dst->length += src_length;
 }
 
-void bb_string_append(bb_string_t* dst, char c) {
+void bb_string_append(bb_string_t dst, char c) {
+	bb_assert(dst != NULL);
 	dst->cstr[dst->length] = c;
 	if (++dst->length + 1 > dst->capacity) {
 		dst->capacity = dst->length + BB_STRING_MIN_CAPACITY;
-		dst->cstr = realloc(dst->cstr, dst->capacity);
+		dst->cstr = bb_realloc(dst->cstr, dst->capacity);
 	}
 	dst->cstr[dst->length] = '\0';
 }
 
 void bb_string_destroy(bb_string_t* str) {
-	free(str->cstr);
-	memset(str, 0, sizeof(*str));
+	bb_assert(str != NULL);
+	bb_assert(*str != NULL);
+	bb_free(&(*str)->cstr);
+	bb_free(str);
 }
 
 void bb_file_copy(const char* src_path, const char* dst_path) {
 	FILE *src, *dst;
+	bb_string_t error;
 	size_t bytes_read;
 	char buffer[4096];
+
+	bb_assert(src_path != NULL);
+	bb_assert(dst_path != NULL);
 
 	src = fopen(src_path, "r");
 	if (src == NULL)
@@ -309,29 +358,34 @@ void bb_file_copy(const char* src_path, const char* dst_path) {
 	return;
 
 fail:
+	error = _bb_strerror();
 	bb_crit(
 		"Could not copy file %s to %s: %s",
-		src_path, dst_path, strerror(errno));
+		src_path, dst_path, error->cstr);
+	// NOTE: Unreachable
+}
 }
 
 char* bb_args_next(int* argc, char*** argv) {
+	bb_assert(argc != NULL);
+	bb_assert(argv != NULL);
+	bb_assert(*argv != NULL);
 	if (*argc <= 0)
 		return NULL;
 	return ((*argv)++)[(*argc)--];
 }
 
 bb_cmd_t bb_cmd_new(void) {
-	return (bb_cmd_t) {
-		.argc = 0,
-		.envc = 0,
-		.argv = bb_string_default(),
-		.envp = bb_string_default(),
-	};
+	bb_cmd_t cmd = bb_malloc(sizeof(*cmd));
+	cmd->argc = cmd->envc = 0;
+	cmd->argv = bb_string_default();
+	cmd->envp = bb_string_default();
+	return cmd;
 }
 
 static void _bb_cmd_append_strings(
 		int* count,
-		bb_string_t* str,
+		bb_string_t str,
 		va_list ap) {
 	const char* s;
 	for (; (s = va_arg(ap, const char*)) != NULL; ++*count) {
@@ -341,17 +395,17 @@ static void _bb_cmd_append_strings(
 	}
 }
 
-void _bb_cmd_append_args(bb_cmd_t* cmd, ...) {
+void _bb_cmd_append_args(bb_cmd_t cmd, ...) {
 	va_list ap;
 	va_start(ap, cmd);
-	_bb_cmd_append_strings(&cmd->argc, &cmd->argv, ap);
+	_bb_cmd_append_strings(&cmd->argc, cmd->argv, ap);
 	va_end(ap);
 }
 
-void _bb_cmd_append_envs(bb_cmd_t* cmd, ...) {
+void _bb_cmd_append_envs(bb_cmd_t cmd, ...) {
 	va_list ap;
 	va_start(ap, cmd);
-	_bb_cmd_append_strings(&cmd->envc, &cmd->envp, ap);
+	_bb_cmd_append_strings(&cmd->envc, cmd->envp, ap);
 	va_end(ap);
 }
 
@@ -373,7 +427,8 @@ int bb_cmd_wait(bb_proc_t proc) {
 fail:
 	error = _bb_strerror();
 	bb_warn(
-		"Could not wait for child process %llu: %s", (bb_ull_t) proc, error.cstr);
+		"Could not wait for child process %u: %s",
+		_bb_proc_id(proc), error->cstr);
 	bb_info("Assuming child process failed");
 	bb_string_destroy(&error);
 	return EXIT_FAILURE;
@@ -385,19 +440,19 @@ static bb_string_t _bb_string_from_format(const char* fmt, va_list ap) {
 	char* buffer;
 	size_t buffer_size = 32768;
 	va_copy(orig, ap);
-	buffer = malloc(buffer_size);
+	buffer = bb_malloc(buffer_size);
 	while (vsnprintf(buffer, buffer_size, fmt, ap) == buffer_size) {
 		buffer_size <<= 1;
-		buffer = realloc(buffer, buffer_size);
+		buffer = bb_realloc(buffer, buffer_size);
 		va_copy(ap, orig);
 	}
 	out = bb_string_from_cstr(buffer);
-	free(buffer);
+	bb_free(&buffer);
 	return out;
 }
 
 static char** _bb_string_to_null_terminated_array(
-    bb_string_t* str,
+    bb_string_t str,
     char sep) {
 	char** array;
 	size_t elements;
@@ -406,7 +461,7 @@ static char** _bb_string_to_null_terminated_array(
 	for (elements = 0; str->length > 0 && occurrence != NULL; ++elements)
 		occurrence = strchr(occurrence + 1, sep);
 
-	array = malloc((elements + 1) * sizeof(char*));
+	array = bb_malloc((elements + 1) * sizeof(*array));
 	array[0] = str->cstr;
 	for (size_t i = 1; i <= elements; ++i) {
 		array[i] = strchr(array[i-1], sep);
@@ -418,30 +473,30 @@ static char** _bb_string_to_null_terminated_array(
 	return array;
 }
 
-static bb_proc_t _bb_cmd_execute(bb_cmd_t* cmd, va_list ap) {
+static bb_proc_t _bb_cmd_execute(bb_cmd_t cmd, va_list ap) {
 	bb_proc_t proc;
 	bb_string_t cmdline, cmdenv, error;
 	char **argv, **envp;
 
-	cmdline = _bb_string_from_format(cmd->argv.cstr, ap);
-	cmdenv = _bb_string_from_format(cmd->envp.cstr, ap);
-	bb_info("Executing: %s", cmdline.cstr);
+	cmdline = _bb_string_from_format(cmd->argv->cstr, ap);
+	cmdenv = _bb_string_from_format(cmd->envp->cstr, ap);
+	bb_info("Executing: %s", cmdline->cstr);
 	if (cmd->envc > 0)
-		bb_info("- with environment: %s", cmdenv.cstr);
+		bb_info("- with environment: %s", cmdenv->cstr);
 
-	envp = _bb_string_to_null_terminated_array(&cmdenv, ' ');
+	envp = _bb_string_to_null_terminated_array(cmdenv, ' ');
 #ifdef BB_PLATFORM_WINDOWS
 	PROCESS_INFORMATION proc_info = {0};
 	STARTUPINFOA startup_info = {0};
-	startup_info.cb = sizeof(STARTUPINFOA);
+	startup_info.cb = sizeof(startup_info);
 	if (!CreateProcessA(
-				NULL, cmdline.cstr, NULL, NULL,
+				NULL, cmdline->cstr, NULL, NULL,
 				FALSE, NORMAL_PRIORITY_CLASS, envp,
 				NULL, &startup_info, &proc_info))
 		goto fail;
 	proc = proc_info.hProcess;
 #else
-	argv = _bb_string_to_null_terminated_array(&cmdline, ' ');
+	argv = _bb_string_to_null_terminated_array(cmdline, ' ');
 	proc = fork();
 	if (proc < 0)
 		goto fail;
@@ -449,16 +504,16 @@ static bb_proc_t _bb_cmd_execute(bb_cmd_t* cmd, va_list ap) {
 		for (size_t e = 0; e < cmd->envc; ++e)
 			putenv(envp[e]);
 		if (execvp(argv[0], argv) < 0)
-			bb_crit("Could not execute command: %s", cmdline.cstr);
+			bb_crit("Could not execute command: %s", cmdline->cstr);
 	}
-	free(argv);
+	bb_free(&argv);
 #endif
-	free(envp);
+	bb_free(&envp);
 
 	bb_string_destroy(&cmdline);
 	bb_string_destroy(&cmdenv);
 
-	bb_info("- as process: %llu", (bb_ull_t) proc);
+	bb_info("- as process: %u", _bb_proc_id(proc));
 
 	return proc;
 
@@ -466,10 +521,10 @@ fail:
 	error = _bb_strerror();
 	bb_crit(
 		"Could not run command: %s: %s",
-		cmdline.cstr, error.cstr);
+		cmdline->cstr, error->cstr);
 }
 
-bb_proc_t _bb_cmd_run_async(bb_cmd_t* cmd, ...) {
+bb_proc_t _bb_cmd_run_async(bb_cmd_t cmd, ...) {
 	bb_proc_t proc;
 	va_list ap;
 	va_start(ap, cmd);
@@ -478,7 +533,7 @@ bb_proc_t _bb_cmd_run_async(bb_cmd_t* cmd, ...) {
 	return proc;
 }
 
-int _bb_cmd_run(bb_cmd_t* cmd, ...) {
+int _bb_cmd_run(bb_cmd_t cmd, ...) {
 	int exit_status;
 	va_list ap;
 	va_start(ap, cmd);
@@ -488,18 +543,18 @@ int _bb_cmd_run(bb_cmd_t* cmd, ...) {
 }
 
 void bb_cmd_destroy(bb_cmd_t* cmd) {
-	bb_string_destroy(&cmd->argv);
-	bb_string_destroy(&cmd->envp);
-	memset(cmd, 0, sizeof(*cmd));
+	bb_assert(cmd != NULL);
+	bb_assert(*cmd != NULL);
+	bb_string_destroy(&(*cmd)->argv);
+	bb_string_destroy(&(*cmd)->envp);
+	bb_free(cmd);
 }
 
 extern int bb_main(int argc, char** argv, char** envp);
 
 int main(int argc, char** argv, char** envp) {
-	assert(argc >= 1 && "Fix your libc implementation");
-
+	bb_assert(argc >= 1);
 	_bb_rebuild_if_needed(argv);
-
 	return bb_main(argc, argv, envp);
 }
 
