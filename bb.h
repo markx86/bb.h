@@ -41,7 +41,7 @@
 #	define BB_INFO "\033[1;36m"
 #	define BB_WARN "\033[1;33m"
 #	define BB_ERROR "\033[1;31m"
-#	define BB_CRIT "\033[1;31;7m"
+#	define BB_CRIT "\033[1;41;97m"
 # define BB_DISABLE_COLORS
 #else
 #	define BB_RESET
