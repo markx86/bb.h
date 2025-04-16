@@ -71,6 +71,8 @@
 			bb_crit("Assertion failed: " #x); \
 	} while (0)
 
+#define BB_UNUSED(x) ((void)(x))
+
 #ifndef BB_STRING_MIN_CAPACITY
 #	define BB_STRING_MIN_CAPACITY 64
 #endif
@@ -155,13 +157,26 @@ static inline void* bb_realloc(void* buffer, size_t size) {
 	return buffer;
 }
 
-static inline void bb_free(void* ptr) {
+static inline void _bb_free(void* ptr) {
 	void** buffer = (void**)ptr;
 	bb_assert(buffer != NULL);
 	bb_assert(*buffer != NULL);
 	free(*buffer);
 	*buffer = NULL;
 }
+#if defined(__GNUC__) || defined(__clang__)
+// NOTE: This wrapper generates a warning when the type of
+// 			 `x` is not a double-pointer :)
+// NOTE: Other note. I don't know if there's a better way to do this :P
+#	define bb_free(x) 										 																		 	 \
+		do { 																 																		 	 \
+			bb_assert((typeof(*(x)))(x) == (void*)(x) && "Type must be a double pointer!");\
+			_bb_free(x);											 																		 	 \
+		} while (0)
+#else
+// FIXME: MSVC has typeof only in C23 mode, cringe as hell
+#	define bb_free(x) _bb_free(x)
+#endif
 
 #ifdef BB_IMPLEMENTATION
 
