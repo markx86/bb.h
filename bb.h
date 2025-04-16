@@ -110,6 +110,9 @@ void bb_string_append(bb_string_t dst, char c);
 void bb_string_destroy(bb_string_t* str);
 
 void bb_file_copy(const char* src_path, const char* dst_path);
+void bb_file_write(const char* path, const void* buffer, size_t size);
+void* bb_file_read(const char* path);
+void bb_file_free(void** buffer);
 
 char* bb_args_next(int* argc, char*** argv);
 
@@ -364,6 +367,66 @@ fail:
 		src_path, dst_path, error->cstr);
 	// NOTE: Unreachable
 }
+
+void bb_file_write(const char* path, const void* buffer, size_t size) {
+	FILE* file;
+	bb_string_t error;
+
+	bb_assert(path != NULL);
+	bb_assert(buffer != NULL);
+	bb_assert(size > 0);
+
+	file = fopen(path, "w");
+	if (file == NULL)
+		goto fail;
+
+	if (fwrite(buffer, size, 1, file) != 1)
+		goto fail;
+
+	fclose(file);
+	return;
+
+fail:
+	error = _bb_strerror();
+	bb_crit("Could not write file %s: %s", path, error->cstr);
+}
+
+void bb_file_free(void** buffer) {
+	bb_free(buffer);
+}
+
+void* bb_file_read(const char* path) {
+	FILE* file;
+	void* buffer;
+	size_t size;
+	bb_string_t error;
+
+	bb_assert(path != NULL);
+
+	file = fopen(path, "r");
+	if (file == NULL)
+		goto fail;
+
+	if (fseek(file, 0, SEEK_END) < 0)
+		goto fail;
+
+	size = ftell(file);
+	if ((long)size < 0)
+		goto fail;
+
+	rewind(file);
+
+	buffer = bb_malloc(size);
+
+	if (fread(buffer, size, 1, file) != 1)
+		goto fail;
+
+	fclose(file);
+	return buffer;
+
+fail:
+	error = _bb_strerror();
+	bb_crit("Could not read file %s: %s", path, error->cstr);
 }
 
 char* bb_args_next(int* argc, char*** argv) {
