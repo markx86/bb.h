@@ -1,5 +1,5 @@
-#ifndef BB_H
-#define BB_H
+#ifndef BB_H_
+#define BB_H_
 
 #if defined(__linux__)
 #	define BB_PLATFORM_LINUX
