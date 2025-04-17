@@ -279,21 +279,22 @@ static time_t _bb_file_last_modification_time(const char* path) {
   bb_string_t error;
 #ifdef BB_PLATFORM_WINDOWS
   WIN32_FILE_ATTRIBUTE_DATA file_attr_data;
+  ULARGE_INTEGER time_full;
+  LPFILETIME time;
   bb_string_t windows_path = _bb_to_windows_path(path);
   if (GetFileAttributesExA(windows_path->cstr,
                            GetFileExInfoStandard,
                            &file_attr_data)) {
     bb_string_destroy(&windows_path);
-    ULARGE_INTEGER time_full;
-    FILETIME* time = &file_attr_data.ftLastWriteTime;
+    time = &file_attr_data.ftLastWriteTime;
     time_full.u.LowPart = time->dwLowDateTime;
     time_full.u.HighPart = time->dwHighDateTime;
-    return time_full.QuadPart / 1e9;
+    return time_full.QuadPart * 1e2;
   }
 #else
   struct stat info;
   if (stat(path, &info) == 0)
-    return info.st_mtime;
+    return info.st_mtim.tv_sec * 1e9 + info.st_mtim.tv_nsec;
 #endif
   error = _bb_strerror();
   bb_crit("Could not get access time for %s: %s", path, error->cstr);
