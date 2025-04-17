@@ -78,6 +78,10 @@
 # define BB_STRING_MIN_CAPACITY 64
 #endif
 
+#ifndef BB_VECTOR_MIN_CAPACITY
+# define BB_VECTOR_MIN_CAPACITY 16
+#endif
+
 #define BB_TRUE  1
 #define BB_FALSE 0
 
@@ -167,6 +171,25 @@ int bb_cmd_wait(bb_proc_t proc);
 void bb_cmd_destroy(bb_cmd_t* cmd);
 bb_string_t bb_cmd_to_string(bb_cmd_t cmd);
 
+const void* _bb_vector_new(size_t item_size, size_t length);
+#define bb_vector_new(T, L) _bb_vector_new(sizeof(T), L)
+#define bb_vector_default(T) bb_vector_new(T, 0)
+void _bb_vector_push(const void** vec, void* elem);
+#define bb_vector_push(vec, elem)              \
+  do {                                         \
+    BB_ENSURE_DOUBLEPTR(&vec);                 \
+    _bb_vector_push((const void**)&vec, elem); \
+  } while (0)
+long bb_vector_pop(const void* vec, void* elem);
+size_t bb_vector_length(const void* vec);
+size_t bb_vector_capacity(const void* vec);
+void _bb_vector_destroy(const void** vec);
+#define bb_vector_destroy(vec)              \
+  do {                                      \
+    BB_ENSURE_DOUBLEPTR(&vec);              \
+    _bb_vector_destroy((const void**)&vec); \
+  } while (0)
+
 static inline void* bb_malloc(size_t size) {
   void* buffer;
   bb_assert(size > 0);
@@ -232,6 +255,13 @@ static inline void _bb_free(void** buffer) {
 
 #define BB_UNIMPLEMENTED_STUB() \
   bb_crit("%s() unimplemented for this platform", __func__)
+
+typedef struct {
+  unsigned int capacity;
+  unsigned int length;
+  unsigned int item_size;
+  unsigned int checksum;
+} *_bb_vector_t;
 
 static inline unsigned int _bb_proc_id(bb_proc_t handle) {
 #ifdef BB_PLATFORM_WINDOWS
@@ -650,6 +680,94 @@ void bb_cmd_destroy(bb_cmd_t* cmd) {
   bb_string_destroy(&(*cmd)->argv);
   bb_string_destroy(&(*cmd)->envp);
   bb_free(cmd);
+}
+
+static inline unsigned int _bb_vector_compute_checksum(_bb_vector_t vec) {
+  return -(vec->capacity + vec->length + vec->item_size);
+}
+
+static inline void _bb_vector_validate_checksum(_bb_vector_t vec) {
+  bb_assert((vec->item_size + vec->length + vec->capacity + vec->checksum) == 0);
+}
+
+static inline _bb_vector_t _bb_vector_get(const void* ptr) {
+  _bb_vector_t vec;
+  bb_assert(ptr != NULL);
+  vec = ((_bb_vector_t)ptr) - 1;
+  _bb_vector_validate_checksum(vec);
+  return vec;
+}
+
+const void* _bb_vector_new(size_t item_size, size_t capacity) {
+  _bb_vector_t vec;
+
+  bb_assert(item_size > 0);
+
+  if (capacity < BB_VECTOR_MIN_CAPACITY)
+    capacity = BB_VECTOR_MIN_CAPACITY;
+
+  vec = bb_malloc(capacity * item_size + sizeof(*vec));
+  vec->item_size = item_size;
+  vec->capacity = capacity;
+  vec->length = 0;
+  vec->checksum = _bb_vector_compute_checksum(vec);
+
+  // It hurts me to cast this to a const void*, but I really
+  // don't want people writing in to vector memory willy-nilly,
+  // so this should indicate to people that they should use `push` and `pop`
+  // instead, and only use direct access for accessing data.
+  return vec + 1;
+}
+
+void _bb_vector_push(const void** vec_ptr, void* elem) {
+  _bb_vector_t vec;
+  void* raw_ptr;
+
+  bb_assert(vec_ptr != NULL);
+  vec = _bb_vector_get(*vec_ptr);
+  if (vec->length + 1 >= vec->capacity) {
+    bb_assert((vec->capacity >> 31) == 0); // Ensure we don't overflow U32.
+    vec->capacity <<= 1;
+    vec = bb_realloc(vec, vec->capacity * vec->item_size + sizeof(*vec));
+    *vec_ptr = vec;
+  }
+
+  raw_ptr = ((char*)*vec_ptr) + vec->item_size * vec->length++;
+  memcpy(raw_ptr, elem, vec->item_size);
+
+  vec->checksum = _bb_vector_compute_checksum(vec);
+}
+
+long bb_vector_pop(const void* vec_ptr, void* elem) {
+  _bb_vector_t vec = _bb_vector_get(vec_ptr);
+  unsigned int len;
+  void* raw_ptr;
+
+  if ((len = vec->length) == 0)
+    goto out;
+
+  raw_ptr = ((char*)vec_ptr) + vec->item_size * --vec->length;
+  memcpy(elem, raw_ptr, vec->item_size);
+
+  vec->checksum = _bb_vector_compute_checksum(vec);
+out:
+  return len - 1;
+}
+
+size_t bb_vector_length(const void* vec_ptr) {
+  return _bb_vector_get(vec_ptr)->length;
+}
+
+size_t bb_vector_capacity(const void* vec_ptr) {
+  return _bb_vector_get(vec_ptr)->capacity;
+}
+
+void _bb_vector_destroy(const void** vec_ptr) {
+  _bb_vector_t vec;
+  bb_assert(vec_ptr != NULL);
+  vec = _bb_vector_get(*vec_ptr);
+  *vec_ptr = NULL;
+  bb_free(&vec);
 }
 
 static const char* _bb_param_get_env_name(const char* long_name) {
