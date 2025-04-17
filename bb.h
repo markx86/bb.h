@@ -42,6 +42,7 @@
 # define BB_WARN "\033[1;33m"
 # define BB_ERROR "\033[1;31m"
 # define BB_CRIT "\033[1;41;97m"
+# define BB_BOLD "\033[1m"
 # define BB_DISABLE_COLORS
 #else
 # define BB_RESET
@@ -49,6 +50,7 @@
 # define BB_WARN
 # define BB_ERROR
 # define BB_CRIT
+# define BB_BOLD
 # undef BB_DISABLE_COLORS
 # define BB_DISABLE_COLORS "-DBB_DISABLE_COLORS"
 #endif
@@ -76,6 +78,9 @@
 # define BB_STRING_MIN_CAPACITY 64
 #endif
 
+#define BB_TRUE  1
+#define BB_FALSE 0
+
 typedef struct {
   size_t capacity;
   size_t length;
@@ -94,6 +99,12 @@ typedef struct {
   bb_string_t argv;
   bb_string_t envp;
 } *bb_cmd_t;
+
+typedef struct {
+  int argc;
+  const char* const* argv;
+  const char* const* envp;
+} *bb_params_t;
 
 #if defined(BB_PLATFORM_LINUX) || defined(BB_PLATFORM_APPLE)
   typedef pid_t bb_proc_t;
@@ -115,7 +126,18 @@ void bb_file_write(const char* path, const void* buffer, size_t size);
 void* bb_file_read(const char* path);
 void bb_file_free(void** buffer);
 
-char* bb_args_next(int* argc, char*** argv);
+const char* bb_params_get_string(bb_params_t params,
+                                 const char* long_name, char short_name,
+                                 const char* help, const char* default_value);
+long bb_params_get_int(bb_params_t params,
+                       const char* long_name, char short_name,
+                       const char* help, const long* default_value);
+double bb_params_get_float(bb_params_t params,
+                           const char* long_name, char short_name,
+                           const char* help, const double* default_value);
+int bb_params_get_switch(bb_params_t params,
+                         const char* long_name, char short_name,
+                         const char* help, int default_value);
 
 bb_cmd_t bb_cmd_new(void);
 void _bb_cmd_append_args(bb_cmd_t cmd, ...);
@@ -199,6 +221,7 @@ static inline void _bb_free(void* ptr) {
 
 #include <stdarg.h>
 #include <errno.h>
+#include <ctype.h>
 
 #if defined(BB_PLATFORM_LINUX) || defined(BB_PLATFORM_APPLE)
 # include <sys/stat.h>
@@ -627,12 +650,244 @@ void bb_cmd_destroy(bb_cmd_t* cmd) {
   bb_free(cmd);
 }
 
-extern int bb_main(int argc, char** argv, char** envp);
+static const char* _bb_param_get_env_name(const char* long_name) {
+  size_t name_len;
+  char *env_name, *e;
+
+  bb_assert(long_name != NULL);
+  name_len = strlen(long_name) + 3;
+
+  e = env_name = bb_malloc(name_len);
+  *(e++) = 'B';
+  *(e++) = 'B';
+  *(e++) = '_';
+
+  for (const char* n = long_name; *n; ++n)
+    *(e++) = isalnum(*n) ? toupper(*n) : '_';
+
+  return env_name;
+}
+
+static const char* _bb_param_find_by_name(bb_params_t params,
+                                          const char* long_name,
+                                          char short_name,
+                                          int has_value) {
+  size_t name_len;
+  const char *arg, *env_name, *param_value;
+  const char* const* argv;
+
+  bb_assert(params != NULL);
+  bb_assert(long_name != NULL);
+
+  argv = params->argv;
+  name_len = strlen(long_name);
+  while ((arg = *(argv++)) != NULL) {
+    if (*(arg++) != '-')
+      continue; // Arg. does not start with '-', skip.
+    if (*arg == short_name)
+      break;    // Arg. matches the short name, we found our guy!
+    if (*(arg++) != '-')
+      continue; // Arg. does not start with '--', skip.
+    if (!strncmp(long_name, arg, name_len))
+      break;    // Arg. matches the long name, we found the param!
+  }
+  if (arg == NULL) {
+    // Did not find parameter in argv, search in environment variables.
+    env_name = _bb_param_get_env_name(long_name);
+    param_value = getenv(env_name);
+    bb_free(&env_name);
+    // Always return value if it's an env var.
+    return param_value;
+  }
+
+  if (!has_value)
+    return "";
+
+  if ((param_value = strchr(arg, '=')) == NULL)
+    return *argv;
+  else
+    return param_value + 1;
+}
+
+typedef enum {
+  _BB_PARAM_STRING,
+  _BB_PARAM_LONG,
+  _BB_PARAM_DOUBLE,
+  _BB_PARAM_SWITCH,
+  _BB_PARAM_TYPE_MAX
+} _bb_param_type_t;
+
+static void _bb_param_print_help(const char* long_name, char short_name,
+                                 _bb_param_type_t type, const char* help,
+                                 const void* default_value) {
+  char buffer[32] = "None";
+  const char *type_str, *value_str = buffer;
+  const char short_str[] = {
+    ' ', '(', 'o', 'r', ' ', '-', short_name, ')', '\0'
+  };
+
+  switch (type) {
+    case _BB_PARAM_STRING:
+      if (default_value)
+        value_str = default_value;
+      type_str = "string";
+      break;
+    case _BB_PARAM_LONG:
+      if (default_value != NULL)
+        snprintf(buffer, sizeof(buffer),
+                 "%ld", *(const long*)default_value);
+      type_str = "integer";
+      break;
+    case _BB_PARAM_DOUBLE:
+      if (default_value != NULL)
+        snprintf(buffer, sizeof(buffer),
+                 "%lf", *(const double*)default_value);
+      type_str = "real number";
+      break;
+    case _BB_PARAM_SWITCH:
+      bb_assert(default_value != NULL);
+      snprintf(buffer, sizeof(buffer),
+               "%s", (*(int*)default_value == BB_TRUE) ? "true" : "false");
+      type_str = "switch";
+      break;
+    default:
+      // NOTE: This branch always fails.
+      bb_assert(type < _BB_PARAM_TYPE_MAX);
+      break;
+  }
+
+  bb_info("Info for parameter " BB_BOLD "--%s%s" BB_RESET ":\n"
+          "       | Type: %s\n"
+          "       | Default value: %s\n"
+          "       | Help: %s\n",
+          long_name, short_name ? short_str : "", type_str, value_str,
+          help ? help : "No help provided.");
+}
+
+static inline void _bb_param_missing(const char* long_name, char short_name,
+                                     _bb_param_type_t type, const char* help) {
+  bb_error("Required parameter missing.");
+  _bb_param_print_help(long_name, short_name, type, help, NULL);
+  exit(EXIT_FAILURE);
+}
+
+static inline void _bb_param_invalid(const char* value,
+                                     const char* long_name, char short_name,
+                                     _bb_param_type_t type, const char* help,
+                                     const void* default_value) {
+  bb_error("Invalid value '%s' for parameter.", value);
+  _bb_param_print_help(long_name, short_name, type, help, default_value);
+  exit(EXIT_FAILURE);
+}
+
+const char* bb_params_get_string(bb_params_t params,
+                                 const char* long_name, char short_name,
+                                 const char* help, const char* default_value) {
+  const char* val = _bb_param_find_by_name(params, long_name,
+                                           short_name, BB_TRUE);
+  if (!val) {
+    if (default_value == NULL)
+      _bb_param_missing(long_name, short_name, _BB_PARAM_STRING, help);
+    val = default_value;
+  }
+  return val;
+}
+
+long bb_params_get_int(bb_params_t params,
+                       const char* long_name, char short_name,
+                       const char* help, const long* default_value) {
+  long int_val;
+  char* endp;
+  const char* val = _bb_param_find_by_name(params, long_name,
+                                           short_name, BB_TRUE);
+  if (!val) {
+    if (default_value == NULL)
+      _bb_param_missing(long_name, short_name, _BB_PARAM_LONG, help);
+    int_val = *default_value;
+  } else {
+    int_val = strtol(val, &endp, 0);
+    if (*val == '\0' || *endp != '\0')
+      _bb_param_invalid(val, long_name, short_name,
+                        _BB_PARAM_LONG, help, &default_value);
+  }
+  return int_val;
+}
+
+double bb_params_get_float(bb_params_t params,
+                           const char* long_name, char short_name,
+                           const char* help, const double* default_value) {
+  double float_val;
+  char* endp;
+  const char* val = _bb_param_find_by_name(params, long_name,
+                                           short_name, BB_TRUE);
+  if (!val) {
+    if (default_value == NULL)
+      _bb_param_missing(long_name, short_name, _BB_PARAM_DOUBLE, help);
+    float_val = *default_value;
+  } else {
+    float_val = strtod(val, &endp);
+    if (*val == '\0' || *endp != '\0')
+      _bb_param_invalid(val, long_name, short_name,
+                        _BB_PARAM_DOUBLE, help, default_value);
+  }
+  return float_val;
+}
+
+int bb_params_get_switch(bb_params_t params,
+                         const char* long_name, char short_name,
+                         const char* help, int default_value) {
+  long int_val;
+  char* endp;
+  const char* val = _bb_param_find_by_name(params, long_name,
+                                           short_name, BB_FALSE);
+
+  bb_assert(default_value == BB_TRUE || default_value == BB_FALSE);
+
+  // Switch is not present, return the default value.
+  if (!val)
+    return default_value;
+
+  // Switch is present, but has no value. Switch the default value anyways.
+  if (*val == '\0')
+    return !default_value;
+
+  int_val = strtol(val, &endp, 10);
+  // Value is a number.
+  if (*endp == '\0')
+    return int_val == 0 ? BB_FALSE : BB_TRUE;
+  // Value is a string.
+  if (!strcasecmp(val, "yes") || !strcasecmp(val, "true"))
+    return BB_TRUE;
+  else if (!strcasecmp(val, "no") || !strcasecmp(val, "false"))
+    return BB_FALSE;
+
+  _bb_param_invalid(val, long_name, short_name,
+                    _BB_PARAM_SWITCH, help, &default_value);
+  // NOTE: Unreachable.
+  return BB_FALSE;
+}
+
+extern int bb_main(bb_params_t params);
+
+static bb_params_t _bb_params_from(int argc, char** argv, char** envp) {
+  bb_params_t params = bb_malloc(sizeof(*params));
+
+  params->argc = argc;
+  // NOTE: This pointers are weird, because I don't want the user
+  //       to edit the data they point to, so I cast them into
+  //       pointers to const data.
+  params->argv = (const char* const*)argv;
+  params->envp = (const char* const*)envp;
+
+  return params;
+}
 
 int main(int argc, char** argv, char** envp) {
+  bb_params_t params;
   bb_assert(argc >= 1);
   _bb_rebuild_if_needed(argv);
-  return bb_main(argc, argv, envp);
+  params = _bb_params_from(argc, argv, envp);
+  return bb_main(params);
 }
 
 #endif
