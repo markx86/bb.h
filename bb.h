@@ -182,8 +182,8 @@ static inline void* bb_zalloc(size_t size) {
 }
 
 static inline void* bb_realloc(void* buffer, size_t size) {
-  bb_assert(size > 0); // Do not allow free() by realloc()
-  bb_assert(buffer != NULL); // Do not allow malloc() by realloc()
+  bb_assert(size > 0);       // Do not allow free() by realloc().
+  bb_assert(buffer != NULL); // Do not allow malloc() by realloc().
   buffer = realloc(buffer, size);
   bb_assert(buffer != NULL);
   return buffer;
@@ -412,7 +412,7 @@ fail:
   error = _bb_strerror();
   bb_crit("Could not copy file %s to %s: %s",
           src_path, dst_path, error->cstr);
-  // NOTE: Unreachable
+  // NOTE: Unreachable.
 }
 
 void bb_file_write(const char* path, const void* buffer, size_t size) {
