@@ -294,6 +294,7 @@ static bb_string_t _bb_strerror(void) {
 #ifdef BB_PLATFORM_WINDOWS
 static bb_string_t _bb_to_windows_path(const char* path) {
   bb_string_t str = bb_string_default();
+  bb_assert(path != NULL);
   if (strlen(path) == 0)
     return str;
   if (path[0] == '/')
@@ -309,6 +310,7 @@ static bb_string_t _bb_to_windows_path(const char* path) {
 
 static time_t _bb_file_last_modification_time(const char* path) {
   bb_string_t error;
+  bb_assert(path != NULL);
 #ifdef BB_PLATFORM_WINDOWS
   WIN32_FILE_ATTRIBUTE_DATA file_attr_data;
   ULARGE_INTEGER time_full;
@@ -527,6 +529,8 @@ bb_cmd_t bb_cmd_new(void) {
 
 static void _bb_cmd_append_strings(int* count, bb_string_t str, va_list ap) {
   const char* s;
+  bb_assert(count != NULL);
+  bb_assert(str != NULL);
   for (; (s = va_arg(ap, const char*)) != NULL; ++*count) {
     if (str->length > 0)
       bb_string_append(str, ' ');
@@ -536,6 +540,7 @@ static void _bb_cmd_append_strings(int* count, bb_string_t str, va_list ap) {
 
 void _bb_cmd_append_args(bb_cmd_t cmd, ...) {
   va_list ap;
+  bb_assert(cmd != NULL);
   va_start(ap, cmd);
   _bb_cmd_append_strings(&cmd->argc, cmd->argv, ap);
   va_end(ap);
@@ -543,6 +548,7 @@ void _bb_cmd_append_args(bb_cmd_t cmd, ...) {
 
 void _bb_cmd_append_envs(bb_cmd_t cmd, ...) {
   va_list ap;
+  bb_assert(cmd != NULL);
   va_start(ap, cmd);
   _bb_cmd_append_strings(&cmd->envc, cmd->envp, ap);
   va_end(ap);
@@ -577,6 +583,9 @@ static bb_string_t _bb_string_from_format(const char* fmt, va_list ap) {
   va_list orig;
   char* buffer;
   size_t buffer_size = 32768;
+
+  bb_assert(fmt != NULL);
+
   va_copy(orig, ap);
   buffer = bb_malloc(buffer_size);
   while (vsnprintf(buffer, buffer_size, fmt, ap) == buffer_size) {
@@ -593,6 +602,8 @@ static char** _bb_string_to_null_terminated_array(bb_string_t str, char sep) {
   char** array;
   size_t elements;
   char* occurrence = str->cstr;
+
+  bb_assert(str != NULL);
 
   for (elements = 0; str->length > 0 && occurrence != NULL; ++elements)
     occurrence = strchr(occurrence + 1, sep);
@@ -613,6 +624,8 @@ static bb_proc_t _bb_cmd_execute(bb_cmd_t cmd, va_list ap) {
   bb_proc_t proc;
   bb_string_t cmdline, cmdenv, error;
   char **argv, **envp;
+
+  bb_assert(cmd != NULL);
 
   cmdline = _bb_string_from_format(cmd->argv->cstr, ap);
   cmdenv = _bb_string_from_format(cmd->envp->cstr, ap);
@@ -661,6 +674,7 @@ fail:
 bb_proc_t _bb_cmd_run_async(bb_cmd_t cmd, ...) {
   bb_proc_t proc;
   va_list ap;
+  bb_assert(cmd != NULL);
   va_start(ap, cmd);
   proc = _bb_cmd_execute(cmd, ap);
   va_end(ap);
@@ -670,6 +684,7 @@ bb_proc_t _bb_cmd_run_async(bb_cmd_t cmd, ...) {
 int _bb_cmd_run(bb_cmd_t cmd, ...) {
   int exit_status;
   va_list ap;
+  bb_assert(cmd != NULL);
   va_start(ap, cmd);
   exit_status = bb_cmd_wait(_bb_cmd_execute(cmd, ap));
   va_end(ap);
