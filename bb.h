@@ -104,12 +104,6 @@ typedef struct {
   bb_string_t envp;
 } *bb_cmd_t;
 
-typedef struct {
-  int argc;
-  const char* const* argv;
-  const char* const* envp;
-} *bb_params_t;
-
 #if defined(BB_PLATFORM_LINUX) || defined(BB_PLATFORM_APPLE)
   typedef pid_t bb_proc_t;
 #elif defined(BB_PLATFORM_WINDOWS)
@@ -141,17 +135,15 @@ void bb_file_write(const char* path, const void* buffer, size_t size);
 void* bb_file_read(const char* path);
 void bb_file_free(void** buffer);
 
-const char* bb_params_get_string(bb_params_t params,
-                                 const char* long_name, char short_name,
+#define NO_SHORT_NAME 0
+
+const char* bb_params_get_string(const char* long_name, char short_name,
                                  const char* help, const char* default_value);
-long bb_params_get_int(bb_params_t params,
-                       const char* long_name, char short_name,
+long bb_params_get_int(const char* long_name, char short_name,
                        const char* help, const long* default_value);
-double bb_params_get_float(bb_params_t params,
-                           const char* long_name, char short_name,
+double bb_params_get_float(const char* long_name, char short_name,
                            const char* help, const double* default_value);
-int bb_params_get_switch(bb_params_t params,
-                         const char* long_name, char short_name,
+int bb_params_get_switch(const char* long_name, char short_name,
                          const char* help, int default_value);
 
 bb_cmd_t bb_cmd_new(void);
@@ -190,6 +182,14 @@ void _bb_vector_destroy(const void** vec);
     _bb_vector_destroy((const void**)&vec); \
   } while (0)
 
+static inline char* bb_strdup(const char* s) {
+  char* duped;
+  bb_assert(s != NULL);
+  duped = strdup(s);
+  bb_assert(duped != NULL);
+  return duped;
+}
+
 static inline void* bb_malloc(size_t size) {
   void* buffer;
   bb_assert(size > 0);
@@ -223,6 +223,8 @@ static inline void _bb_free(void** buffer) {
     BB_ENSURE_DOUBLEPTR(x);  \
     _bb_free((void**)x);     \
   } while (0)
+
+int bb_main(void);
 
 #ifdef BB_IMPLEMENTATION
 
@@ -770,6 +772,14 @@ void _bb_vector_destroy(const void** vec_ptr) {
   bb_free(&vec);
 }
 
+typedef struct {
+  int argc;
+  const char* const* argv;
+  const char* const* envp;
+} *_bb_params_t;
+
+static _bb_params_t params;
+
 static const char* _bb_param_get_env_name(const char* long_name) {
   size_t name_len;
   char *env_name, *e;
@@ -788,8 +798,7 @@ static const char* _bb_param_get_env_name(const char* long_name) {
   return env_name;
 }
 
-static const char* _bb_param_find_by_name(bb_params_t params,
-                                          const char* long_name,
+static const char* _bb_param_find_by_name(const char* long_name,
                                           char short_name,
                                           int has_value) {
   size_t name_len;
@@ -876,7 +885,7 @@ static void _bb_param_print_help(const char* long_name, char short_name,
       break;
   }
 
-  bb_info("Info for parameter " BB_BOLD "--%s%s" BB_RESET ":\n"
+  bb_info("Info for parameter " BB_BOLD "--%s%s" BB_RESET "\n"
           "       | Type: %s\n"
           "       | Default value: %s\n"
           "       | Help: %s\n",
@@ -900,11 +909,9 @@ static inline void _bb_param_invalid(const char* value,
   exit(EXIT_FAILURE);
 }
 
-const char* bb_params_get_string(bb_params_t params,
-                                 const char* long_name, char short_name,
+const char* bb_params_get_string(const char* long_name, char short_name,
                                  const char* help, const char* default_value) {
-  const char* val = _bb_param_find_by_name(params, long_name,
-                                           short_name, BB_TRUE);
+  const char* val = _bb_param_find_by_name(long_name, short_name, BB_TRUE);
   if (!val) {
     if (default_value == NULL)
       _bb_param_missing(long_name, short_name, _BB_PARAM_STRING, help);
@@ -913,13 +920,11 @@ const char* bb_params_get_string(bb_params_t params,
   return val;
 }
 
-long bb_params_get_int(bb_params_t params,
-                       const char* long_name, char short_name,
+long bb_params_get_int(const char* long_name, char short_name,
                        const char* help, const long* default_value) {
   long int_val;
   char* endp;
-  const char* val = _bb_param_find_by_name(params, long_name,
-                                           short_name, BB_TRUE);
+  const char* val = _bb_param_find_by_name(long_name, short_name, BB_TRUE);
   if (!val) {
     if (default_value == NULL)
       _bb_param_missing(long_name, short_name, _BB_PARAM_LONG, help);
@@ -933,13 +938,11 @@ long bb_params_get_int(bb_params_t params,
   return int_val;
 }
 
-double bb_params_get_float(bb_params_t params,
-                           const char* long_name, char short_name,
+double bb_params_get_float(const char* long_name, char short_name,
                            const char* help, const double* default_value) {
   double float_val;
   char* endp;
-  const char* val = _bb_param_find_by_name(params, long_name,
-                                           short_name, BB_TRUE);
+  const char* val = _bb_param_find_by_name(long_name, short_name, BB_TRUE);
   if (!val) {
     if (default_value == NULL)
       _bb_param_missing(long_name, short_name, _BB_PARAM_DOUBLE, help);
@@ -953,13 +956,11 @@ double bb_params_get_float(bb_params_t params,
   return float_val;
 }
 
-int bb_params_get_switch(bb_params_t params,
-                         const char* long_name, char short_name,
+int bb_params_get_switch(const char* long_name, char short_name,
                          const char* help, int default_value) {
   long int_val;
   char* endp;
-  const char* val = _bb_param_find_by_name(params, long_name,
-                                           short_name, BB_FALSE);
+  const char* val = _bb_param_find_by_name(long_name, short_name, BB_FALSE);
 
   bb_assert(default_value == BB_TRUE || default_value == BB_FALSE);
 
@@ -987,27 +988,40 @@ int bb_params_get_switch(bb_params_t params,
   return BB_FALSE;
 }
 
-extern int bb_main(bb_params_t params);
+static const char** _bb_params_clone_list(char** list) {
+  const char** clone;
+  size_t i = 0;
+  // Count elements in list.
+  while (list[i++])
+    ;
+  // Allocate new list.
+  clone = bb_malloc(sizeof(*clone) * (i + 1));
+  // Set NULL ptr terminator.
+  clone[i] = NULL;
+  // Copy over the values.
+  for (i = 0; list[i]; ++i)
+    clone[i] = bb_strdup(list[i]);
+  return clone;
+}
 
-static bb_params_t _bb_params_from(int argc, char** argv, char** envp) {
-  bb_params_t params = bb_malloc(sizeof(*params));
+static _bb_params_t _bb_params_from(int argc, char** argv, char** envp) {
+  _bb_params_t params = bb_malloc(sizeof(*params));
 
   params->argc = argc;
   // NOTE: This pointers are weird, because I don't want the user
   //       to edit the data they point to, so I cast them into
   //       pointers to const data.
-  params->argv = (const char* const*)argv;
-  params->envp = (const char* const*)envp;
+  params->argv = _bb_params_clone_list(argv);
+  params->envp = _bb_params_clone_list(envp);
 
   return params;
 }
 
 int main(int argc, char** argv, char** envp) {
-  bb_params_t params;
   bb_assert(argc >= 1);
   _bb_rebuild_if_needed(argv);
   params = _bb_params_from(argc, argv, envp);
-  return bb_main(params);
+  return bb_main();
 }
 
 #endif
