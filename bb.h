@@ -121,6 +121,7 @@ typedef struct {
               "Type must be a double pointer!");
 #else
 // FIXME: MSVC has typeof only in C23 mode, cringe as hell.
+# define BB_ENSURE_DOUBLEPTR(x) bb_warn("Switch to a serious compiler")
 #endif
 
 bb_string_t bb_string_new(size_t initial_capacity);
@@ -134,8 +135,6 @@ void bb_file_copy(const char* src_path, const char* dst_path);
 void bb_file_write(const char* path, const void* buffer, size_t size);
 void* bb_file_read(const char* path);
 void bb_file_free(void** buffer);
-
-#define NO_SHORT_NAME 0
 
 const char* bb_params_get_string(const char* long_name, char short_name,
                                  const char* help, const char* default_value);
@@ -218,6 +217,7 @@ static inline void _bb_free(void** buffer) {
   free(*buffer);
   *buffer = NULL;
 }
+
 #define bb_free(x)           \
   do {                       \
     BB_ENSURE_DOUBLEPTR(x);  \
@@ -704,7 +704,8 @@ static inline unsigned int _bb_vector_compute_checksum(_bb_vector_t vec) {
 }
 
 static inline void _bb_vector_validate_checksum(_bb_vector_t vec) {
-  bb_assert((vec->item_size + vec->length + vec->capacity + vec->checksum) == 0);
+  bb_assert((vec->item_size + vec->length +
+             vec->capacity + vec->checksum) == 0);
 }
 
 static inline _bb_vector_t _bb_vector_get(const void* ptr) {
@@ -813,9 +814,9 @@ static const char* _bb_param_get_env_name(const char* long_name) {
   return env_name;
 }
 
-static const char* _bb_param_find_by_name(const char* long_name,
-                                          char short_name,
-                                          int has_value) {
+static const char* _bb_params_find_by_name(const char* long_name,
+                                           char short_name,
+                                           int has_value) {
   size_t name_len;
   const char *arg, *env_name, *param_value;
   const char* const* argv;
@@ -840,7 +841,7 @@ static const char* _bb_param_find_by_name(const char* long_name,
     env_name = _bb_param_get_env_name(long_name);
     param_value = getenv(env_name);
     bb_free(&env_name);
-    // Always return value if it's an env var.
+    // Always return value as is, if it's an env var.
     return param_value;
   }
 
@@ -848,7 +849,7 @@ static const char* _bb_param_find_by_name(const char* long_name,
     return "";
 
   if ((param_value = strchr(arg, '=')) == NULL)
-    return *argv;
+    return *argv == NULL ? "" : *argv;
   else
     return param_value + 1;
 }
@@ -926,7 +927,7 @@ static inline void _bb_param_invalid(const char* value,
 
 const char* bb_params_get_string(const char* long_name, char short_name,
                                  const char* help, const char* default_value) {
-  const char* val = _bb_param_find_by_name(long_name, short_name, BB_TRUE);
+  const char* val = _bb_params_find_by_name(long_name, short_name, BB_TRUE);
   if (!val) {
     if (default_value == NULL)
       _bb_param_missing(long_name, short_name, _BB_PARAM_STRING, help);
@@ -939,7 +940,7 @@ long bb_params_get_int(const char* long_name, char short_name,
                        const char* help, const long* default_value) {
   long int_val;
   char* endp;
-  const char* val = _bb_param_find_by_name(long_name, short_name, BB_TRUE);
+  const char* val = _bb_params_find_by_name(long_name, short_name, BB_TRUE);
   if (!val) {
     if (default_value == NULL)
       _bb_param_missing(long_name, short_name, _BB_PARAM_LONG, help);
@@ -948,7 +949,7 @@ long bb_params_get_int(const char* long_name, char short_name,
     int_val = strtol(val, &endp, 0);
     if (*val == '\0' || *endp != '\0')
       _bb_param_invalid(val, long_name, short_name,
-                        _BB_PARAM_LONG, help, &default_value);
+                        _BB_PARAM_LONG, help, default_value);
   }
   return int_val;
 }
@@ -957,7 +958,7 @@ double bb_params_get_float(const char* long_name, char short_name,
                            const char* help, const double* default_value) {
   double float_val;
   char* endp;
-  const char* val = _bb_param_find_by_name(long_name, short_name, BB_TRUE);
+  const char* val = _bb_params_find_by_name(long_name, short_name, BB_TRUE);
   if (!val) {
     if (default_value == NULL)
       _bb_param_missing(long_name, short_name, _BB_PARAM_DOUBLE, help);
@@ -975,7 +976,7 @@ int bb_params_get_switch(const char* long_name, char short_name,
                          const char* help, int default_value) {
   long int_val;
   char* endp;
-  const char* val = _bb_param_find_by_name(long_name, short_name, BB_FALSE);
+  const char* val = _bb_params_find_by_name(long_name, short_name, BB_FALSE);
 
   bb_assert(default_value == BB_TRUE || default_value == BB_FALSE);
 
@@ -989,7 +990,7 @@ int bb_params_get_switch(const char* long_name, char short_name,
 
   int_val = strtol(val, &endp, 10);
   // Value is a number.
-  if (*endp == '\0')
+  if (endp != NULL && *endp == '\0')
     return int_val == 0 ? BB_FALSE : BB_TRUE;
   // Value is a string.
   if (!strcasecmp(val, "yes") || !strcasecmp(val, "true"))
