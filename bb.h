@@ -224,6 +224,12 @@ static inline void _bb_free(void** buffer) {
     _bb_free((void**)x);     \
   } while (0)
 
+#ifdef BB_PLATFORM_WINDOWS
+char* bb_path(const char* path);
+#else
+#define bb_path(x) bb_strdup(x)
+#endif
+
 int bb_main(void);
 
 #ifdef BB_IMPLEMENTATION
@@ -292,15 +298,23 @@ static bb_string_t _bb_strerror(void) {
 }
 
 #ifdef BB_PLATFORM_WINDOWS
-static bb_string_t _bb_to_windows_path(const char* path) {
-  bb_string_t str = bb_string_default();
+char* bb_path(const char* path) {
+  size_t path_len;
+  char* str;
   bb_assert(path != NULL);
-  if (strlen(path) == 0)
-    return str;
-  if (path[0] == '/')
-    bb_string_concat(str, "C:");
-  bb_string_concat(str, path);
-  for (char* ptr = str->cstr; *ptr != '\0'; ++ptr) {
+  path_len = strlen(path);
+  if (path_len == 0)
+    return path;
+  str = bb_malloc(path_len + 1 + ((path[0] == '/') << 1));
+  // If the UNIX path is absolute, make the Windows path
+  // start with 'C:'.
+  if (path[0] == '/') {
+    str[0] = 'C';
+    str[1] = ':';
+  }
+  strncat(str, path, path_len);
+  // Replace / with \ (we have to do this because Windows is stupid).
+  for (char* ptr = str; *ptr != '\0'; ++ptr) {
     if (*ptr == '/')
       *ptr = '\\';
   }
@@ -315,11 +329,11 @@ static time_t _bb_file_last_modification_time(const char* path) {
   WIN32_FILE_ATTRIBUTE_DATA file_attr_data;
   ULARGE_INTEGER time_full;
   LPFILETIME time;
-  bb_string_t windows_path = _bb_to_windows_path(path);
-  if (GetFileAttributesExA(windows_path->cstr,
+  char* windows_path = bb_path(path);
+  if (GetFileAttributesExA(windows_path,
                            GetFileExInfoStandard,
                            &file_attr_data)) {
-    bb_string_destroy(&windows_path);
+    bb_free(&windows_path);
     time = &file_attr_data.ftLastWriteTime;
     time_full.u.LowPart = time->dwLowDateTime;
     time_full.u.HighPart = time->dwHighDateTime;
@@ -327,6 +341,9 @@ static time_t _bb_file_last_modification_time(const char* path) {
   }
 #else
   struct stat info;
+  // NOTE: We do not use bb_path(..) here since this code will be run
+  // only on *NIX systems, therefore the path will already be in the
+  // correct form.
   if (stat(path, &info) == 0)
     return info.st_mtim.tv_sec * 1e9 + info.st_mtim.tv_nsec;
 #endif
@@ -417,10 +434,14 @@ void bb_file_copy(const char* src_path, const char* dst_path) {
   FILE *src, *dst;
   bb_string_t error;
   size_t bytes_read;
+  char *src_path2, *dst_path2;
   char buffer[4096];
 
   bb_assert(src_path != NULL);
   bb_assert(dst_path != NULL);
+  // Normalize paths.
+  src_path2 = bb_path(src_path);
+  dst_path2 = bb_path(dst_path);
 
   src = fopen(src_path, "r");
   if (src == NULL)
@@ -438,8 +459,10 @@ void bb_file_copy(const char* src_path, const char* dst_path) {
   if (ferror(src))
     goto fail;
 
-  fclose(src);
   fclose(dst);
+  fclose(src);
+  bb_free(&dst_path2);
+  bb_free(&src_path2);
   return;
 
 fail:
