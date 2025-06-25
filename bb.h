@@ -136,6 +136,8 @@ void bb_file_write(const char* path, const void* buffer, size_t size);
 void* bb_file_read(const char* path);
 void bb_file_free(void** buffer);
 void bb_file_delete(const char* path);
+void bb_file_makedirs_from(const char* base, const char* path, int exist_ok);
+void bb_file_makedirs(const char* dir_path, int exist_ok);
 int bb_file_was_modified(const char* path);
 
 const char* bb_params_get_string(const char* long_name, char short_name,
@@ -646,6 +648,110 @@ void bb_file_delete(const char* path) {
 
   _bb_file_delete(path2);
   bb_free(&path2);
+}
+
+void bb_file_makedirs_from(const char* base, const char* path, int exist_ok) {
+  bb_string_t error;
+  char *base2, *path2;
+
+  bb_assert(path != NULL);
+
+  if (*path == '/') {
+    ++path;
+    base = "/";
+  }
+  else if (base == NULL)
+    base = ".";
+
+  base2 = bb_path(base);
+  path2 = bb_path(path);
+
+#ifdef BB_PLATFORM_WINDOWS
+  BB_UNIMPLEMENTED_STUB();
+#else
+  size_t path_len, dname_len;
+  int rc, dir_fd;
+  char *start, *end;
+  char *tmp_path, *tp;
+
+  path_len = strlen(path2);
+  tmp_path = bb_zalloc(path_len + 1);
+
+  dir_fd = open(base, O_DIRECTORY);
+  if (dir_fd < 0) {
+    goto fail;
+  }
+
+  start = path2;
+  tp = tmp_path;
+  do {
+    // This is equivalent to strchrnul(..).
+    end = strchr(start + 1, '/');
+    if (end == NULL)
+      end = path2 + path_len;
+
+    dname_len = end - start;
+    // This shouldn't be possible, but it makes sense to break out of the
+    // loop if there's ever a case where this actually happens.
+    if (dname_len == 0)
+      break;
+
+    // If the directory name is '..', fail.
+    if (dname_len == 3 && start[0] == '/' && start[1] == '.' && start[2] == '.')
+      goto fail;
+    if (dname_len == 2 && start[0] == '.' && start[1] == '.')
+      goto fail;
+
+    // If the directory name is '.', skip it.
+    if (dname_len == 2 && start[0] == '/' && start[1] == '.')
+      goto next;
+    if (dname_len == 1 && start[0] == '.')
+      goto next;
+
+    // Append next directory name to temporary path buffer.
+    strncpy(tp, start, dname_len);
+    tp += dname_len;
+    // Check if directory already exists.
+    errno = 0;
+    rc = faccessat(dir_fd, tmp_path, F_OK, 0);
+    if (rc < 0 && errno != ENOENT)
+      goto fail;
+    else if (rc == 0) {
+      if (!exist_ok) {
+        errno = EEXIST;
+        goto fail;
+      }
+    }
+    // Create the directory.
+    else if (mkdirat(dir_fd, tmp_path, S_IRWXU) < 0)
+      goto fail;
+
+next:
+    start = end;
+  } while (*start);
+
+  bb_free(&tmp_path);
+  close(dir_fd);
+#endif
+
+  bb_free(&path2);
+  bb_free(&base2);
+  return;
+
+fail:
+  error = _bb_strerror();
+  bb_crit("Could not make directories %s%c%s: %s",
+          base2,
+#ifdef BB_PLATFORM_WINDOWS
+          '\\',
+#else
+          '/',
+#endif
+          path2, error->cstr);
+}
+
+void bb_file_makedirs(const char* dir_path, int exist_ok) {
+  bb_file_makedirs_from(NULL, dir_path, exist_ok);
 }
 
 int bb_file_was_modified(const char* path) {
