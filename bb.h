@@ -135,6 +135,7 @@ void bb_file_copy(const char* src_path, const char* dst_path);
 void bb_file_write(const char* path, const void* buffer, size_t size);
 void* bb_file_read(const char* path);
 void bb_file_free(void** buffer);
+void bb_file_delete(const char* path);
 int bb_file_was_modified(const char* path);
 
 const char* bb_params_get_string(const char* long_name, char short_name,
@@ -260,6 +261,8 @@ int bb_main(void);
 # include <sys/stat.h>
 # include <sys/wait.h>
 # include <unistd.h>
+# include <dirent.h>
+# include <errno.h>
 # include <fcntl.h>
 #endif
 
@@ -577,6 +580,72 @@ void* bb_file_read(const char* path) {
 fail:
   error = _bb_strerror();
   bb_crit("Could not read file %s: %s", path2, error->cstr);
+}
+
+static void _bb_file_delete(const char* path) {
+  bb_string_t error;
+
+  bb_assert(path != NULL);
+
+#ifdef BB_PLATFORM_WINDOWS
+  BB_UNIMPLEMENTED_STUB();
+#else
+  size_t ent_path_size;
+  struct stat info;
+  struct dirent* dir_ent;
+  DIR* dir;
+  char* ent_path;
+
+  if (stat(path, &info) < 0)
+    goto fail;
+  if (info.st_mode & S_IFDIR) {
+    ent_path_size = strlen(path) + 1 + 256 + 1;
+    ent_path = bb_zalloc(ent_path_size);
+
+    dir = opendir(path);
+    if (dir == NULL)
+      goto fail;
+
+    errno = 0;
+    while ((dir_ent = readdir(dir)) != NULL) {
+      if (!strncmp(dir_ent->d_name, ".", 1) ||
+          !strncmp(dir_ent->d_name, "..", 2))
+        continue;
+      // Remove all files and subdirectories recursively.
+      snprintf(ent_path, ent_path_size, "%s/%s", path, dir_ent->d_name);
+      bb_file_delete(ent_path);
+    }
+    if (errno)
+      goto fail;
+    // Remove directory.
+    if (rmdir(path) < 0)
+      goto fail;
+
+    bb_free(&ent_path);
+  }
+  else if (info.st_mode & S_IFREG) {
+    // Remove file.
+    if (unlink(path) < 0)
+      goto fail;
+  }
+  else
+    bb_crit("Unknown type for file %s", path);
+#endif
+  return;
+
+fail:
+  error = _bb_strerror();
+  bb_crit("Could not delete file %s: %s", path, error->cstr);
+}
+
+void bb_file_delete(const char* path) {
+  char* path2;
+
+  bb_assert(path != NULL);
+  path2 = bb_path(path);
+
+  _bb_file_delete(path2);
+  bb_free(&path2);
 }
 
 int bb_file_was_modified(const char* path) {
