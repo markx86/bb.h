@@ -120,7 +120,7 @@ void bb_file_free(void** buffer);
 void bb_file_delete(const char* path);
 void bb_file_makedirs_from(const char* base, const char* path, int exist_ok);
 void bb_file_makedirs(const char* dir_path, int exist_ok);
-int bb_file_was_modified(const char* path);
+int bb_file_cmpmodtime(const char* a_path, const char* b_path);
 
 const char* bb_params_get_string(const char* long_name, char short_name,
                                  const char* help, const char* default_value);
@@ -252,8 +252,6 @@ typedef struct {
   unsigned int checksum;
 } *_bb_vector_t;
 
-static time_t _bb_ref_time;
-
 static inline unsigned int _bb_proc_id(bb_proc_t handle) {
 #ifdef BB_PLATFORM_WINDOWS
   return (unsigned int)GetProcessId(handle);
@@ -305,7 +303,8 @@ char* bb_path(const char* path) {
 }
 #endif
 
-static time_t _bb_file_last_modification_time(const char* path) {
+static time_t _bb_file_last_modification_time(const char* path,
+                                              int fail_on_err) {
   bb_string_t error;
   bb_assert(path != NULL);
 #ifdef BB_PLATFORM_WINDOWS
@@ -330,21 +329,21 @@ static time_t _bb_file_last_modification_time(const char* path) {
   if (stat(path, &info) == 0)
     return info.st_mtim.tv_sec * 1e9 + info.st_mtim.tv_nsec;
 #endif
-  error = _bb_strerror();
-  bb_crit("Could not get access time for %s: %s", path, error->cstr);
+  if (fail_on_err) {
+    error = _bb_strerror();
+    bb_crit("Could not get access time for %s: %s", path, error->cstr);
+  }
+  return 0;
 }
 
 static void _bb_rebuild_if_needed(char** argv) {
   bb_cmd_t cmd;
   time_t src, bin;
-  char ref_time[32];
 
   bb_assert(argv != NULL);
 
-  bin = _bb_file_last_modification_time(argv[0]);
-  src = _bb_file_last_modification_time(BB_SOURCE);
-  // Save the bin time as a reference.
-  _bb_ref_time = bin;
+  bin = _bb_file_last_modification_time(argv[0], BB_FALSE);
+  src = _bb_file_last_modification_time(BB_SOURCE, BB_TRUE);
   if (src < bin)
     return;
 
@@ -360,13 +359,6 @@ static void _bb_rebuild_if_needed(char** argv) {
   cmd = bb_cmd_new();
   while (*argv != NULL)
     bb_cmd_append_args(cmd, *(argv++));
-
-  // Pass along the current time reference, unless the user has already
-  // specified it in the environment.
-  if (getenv("BB_REF_TIME") == NULL) {
-    snprintf(ref_time, sizeof(ref_time), "BB_REF_TIME=%lu", _bb_ref_time);
-    bb_cmd_append_envs(cmd, ref_time);
-  }
 
   exit(bb_cmd_run(cmd));
 }
@@ -728,9 +720,16 @@ void bb_file_makedirs(const char* dir_path, int exist_ok) {
   bb_file_makedirs_from(NULL, dir_path, exist_ok);
 }
 
-int bb_file_was_modified(const char* path) {
-  time_t mtime = _bb_file_last_modification_time(path);
-  return _bb_ref_time < mtime;
+int bb_file_cmpmodtime(const char* a_path, const char* b_path) {
+  time_t a_mtime, b_mtime;
+
+  bb_assert(a_path != NULL);
+  bb_assert(b_path != NULL);
+
+  a_mtime = _bb_file_last_modification_time(a_path, BB_FALSE);
+  b_mtime = _bb_file_last_modification_time(b_path, BB_FALSE);
+
+  return a_mtime < b_mtime ? -1 : a_mtime > b_mtime ? +1 : 0;
 }
 
 char* bb_args_next(int* argc, char*** argv) {
@@ -1252,28 +1251,11 @@ static _bb_params_t _bb_params_from(int argc, char** argv, char** envp) {
   return params;
 }
 
-static void _bb_set_ref_time(void) {
-  int force_update;
-
-  _bb_ref_time = bb_params_get_int("ref-time", 0,
-                                   "Specifies a reference time to use for"
-                                   "determining modified files.",
-                                   &_bb_ref_time);
-
-  force_update = bb_params_get_switch("force-update", 0,
-                                      "Forces all files to be "
-                                      "considered modified.",
-                                      BB_FALSE);
-  if (force_update)
-    _bb_ref_time = 0;
-}
-
 int main(int argc, char** argv, char** envp) {
   int rc;
   bb_assert(argc >= 1);
   _bb_rebuild_if_needed(argv);
   params = _bb_params_from(argc, argv, envp);
-  _bb_set_ref_time();
   rc = bb_main();
   _bb_touch_self(argv[0]);
   return rc;
