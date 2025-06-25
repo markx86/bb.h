@@ -309,7 +309,7 @@ char* bb_path(const char* path) {
   path_len = strlen(path);
   if (path_len == 0)
     return path;
-  str = bb_malloc(path_len + 1 + ((path[0] == '/') << 1));
+  str = bb_zalloc(path_len + 1 + ((path[0] == '/') << 1));
   // If the UNIX path is absolute, make the Windows path
   // start with 'C:'.
   if (path[0] == '/') {
@@ -396,6 +396,9 @@ static void _bb_rebuild_if_needed(char** argv) {
 // (sussy function name o_o)
 static void _bb_touch_self(const char* self) {
   bb_string_t error;
+
+  bb_assert(self != NULL);
+
 #ifdef BB_PLATFORM_WINDOWS
   BB_UNIMPLEMENTED_STUB();
 #else
@@ -408,6 +411,7 @@ static void _bb_touch_self(const char* self) {
     goto fail;
 #endif
   return;
+
 fail:
   error = _bb_strerror();
   bb_error("Could not touch self: %s", error->cstr);
@@ -479,11 +483,11 @@ void bb_file_copy(const char* src_path, const char* dst_path) {
   src_path2 = bb_path(src_path);
   dst_path2 = bb_path(dst_path);
 
-  src = fopen(src_path, "r");
+  src = fopen(src_path2, "r");
   if (src == NULL)
     goto fail;
 
-  dst = fopen(dst_path, "w");
+  dst = fopen(dst_path2, "w");
   if (dst == NULL)
     goto fail;
 
@@ -503,20 +507,21 @@ void bb_file_copy(const char* src_path, const char* dst_path) {
 
 fail:
   error = _bb_strerror();
-  bb_crit("Could not copy file %s to %s: %s",
-          src_path, dst_path, error->cstr);
-  // NOTE: Unreachable.
+  bb_crit("Could not copy file %s to %s: %s", src_path2, dst_path2, error->cstr);
 }
 
 void bb_file_write(const char* path, const void* buffer, size_t size) {
   FILE* file;
+  char* path2;
   bb_string_t error;
 
   bb_assert(path != NULL);
   bb_assert(buffer != NULL);
   bb_assert(size > 0);
 
-  file = fopen(path, "w");
+  path2 = bb_path(path);
+
+  file = fopen(path2, "w");
   if (file == NULL)
     goto fail;
 
@@ -524,11 +529,12 @@ void bb_file_write(const char* path, const void* buffer, size_t size) {
     goto fail;
 
   fclose(file);
+  bb_free(&path2);
   return;
 
 fail:
   error = _bb_strerror();
-  bb_crit("Could not write file %s: %s", path, error->cstr);
+  bb_crit("Could not write file %s: %s", path2, error->cstr);
 }
 
 void bb_file_free(void** buffer) {
@@ -538,12 +544,15 @@ void bb_file_free(void** buffer) {
 void* bb_file_read(const char* path) {
   FILE* file;
   void* buffer;
+  char* path2;
   size_t size;
   bb_string_t error;
 
   bb_assert(path != NULL);
 
-  file = fopen(path, "r");
+  path2 = bb_path(path);
+
+  file = fopen(path2, "r");
   if (file == NULL)
     goto fail;
 
@@ -556,17 +565,18 @@ void* bb_file_read(const char* path) {
 
   rewind(file);
 
-  buffer = bb_malloc(size);
+  buffer = bb_zalloc(size);
 
   if (fread(buffer, size, 1, file) != 1)
     goto fail;
 
   fclose(file);
+  bb_free(&path2);
   return buffer;
 
 fail:
   error = _bb_strerror();
-  bb_crit("Could not read file %s: %s", path, error->cstr);
+  bb_crit("Could not read file %s: %s", path2, error->cstr);
 }
 
 int bb_file_was_modified(const char* path) {
