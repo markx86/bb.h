@@ -91,12 +91,6 @@ typedef struct {
   char* cstr;
 } *bb_string_t;
 
-typedef struct bb_list {
-  struct bb_list* next;
-  struct bb_list* prev;
-  void* elem;
-} bb_list_t;
-
 typedef struct {
   int argc;
   int envc;
@@ -110,18 +104,6 @@ typedef struct {
   typedef HANDLE bb_proc_t;
 #else
 # error "Unsupported platform"
-#endif
-
-#if defined(__GNUC__) || defined(__clang__)
-// NOTE: This wrapper generates a warning when the type of
-//        `x` is not a double-pointer :)
-// NOTE: Other note. I don't know if there's a better way to do this :P
-# define BB_ENSURE_DOUBLEPTR(x) \
-    bb_assert((typeof(*(x)))(x) == (void*)(x) && \
-              "Type must be a double pointer!");
-#else
-// FIXME: MSVC has typeof only in C23 mode, cringe as hell.
-# define BB_ENSURE_DOUBLEPTR(x) bb_warn("Switch to a serious compiler")
 #endif
 
 bb_string_t bb_string_new(size_t initial_capacity);
@@ -166,24 +148,20 @@ int bb_cmd_wait(bb_proc_t proc);
 void bb_cmd_destroy(bb_cmd_t* cmd);
 bb_string_t bb_cmd_to_string(bb_cmd_t cmd);
 
-const void* _bb_vector_new(size_t item_size, size_t length);
-#define bb_vector_new(T, L) _bb_vector_new(sizeof(T), L)
+void* _bb_vector_new(size_t item_size, size_t length);
+#define bb_vector_new(T, L) ((T*)_bb_vector_new(sizeof(T), L))
 #define bb_vector_default(T) bb_vector_new(T, 0)
-void _bb_vector_push(const void** vec, void* elem);
-#define bb_vector_push(vec, elem)              \
-  do {                                         \
-    BB_ENSURE_DOUBLEPTR(&vec);                 \
-    _bb_vector_push((const void**)&vec, elem); \
+void* _bb_vector_push(void* vec, void* elem);
+#define bb_vector_push(vec, T, elem)    \
+  do {                                  \
+    T elem2 = elem;                     \
+    vec = _bb_vector_push(vec, &elem2); \
   } while (0)
-long bb_vector_pop(const void* vec, void* elem);
-size_t bb_vector_length(const void* vec);
-size_t bb_vector_capacity(const void* vec);
-void _bb_vector_destroy(const void** vec);
-#define bb_vector_destroy(vec)              \
-  do {                                      \
-    BB_ENSURE_DOUBLEPTR(&vec);              \
-    _bb_vector_destroy((const void**)&vec); \
-  } while (0)
+long bb_vector_pop(void* vec, void* elem);
+size_t bb_vector_length(void* vec);
+size_t bb_vector_capacity(void* vec);
+void _bb_vector_destroy(void** vec);
+#define bb_vector_destroy(vec_ref) _bb_vector_destroy((void**)vec_ref)
 
 static inline char* bb_strdup(const char* s) {
   char* duped;
@@ -222,11 +200,7 @@ static inline void _bb_free(void** buffer) {
   *buffer = NULL;
 }
 
-#define bb_free(x)           \
-  do {                       \
-    BB_ENSURE_DOUBLEPTR(x);  \
-    _bb_free((void**)x);     \
-  } while (0)
+#define bb_free(x) _bb_free((void**)x)
 
 #ifdef BB_PLATFORM_WINDOWS
 char* bb_path(const char* path);
@@ -957,7 +931,7 @@ static inline void _bb_vector_validate_checksum(_bb_vector_t vec) {
              vec->capacity + vec->checksum) == 0);
 }
 
-static inline _bb_vector_t _bb_vector_get(const void* ptr) {
+static inline _bb_vector_t _bb_vector_get(void* ptr) {
   _bb_vector_t vec;
   bb_assert(ptr != NULL);
   vec = ((_bb_vector_t)ptr) - 1;
@@ -965,7 +939,7 @@ static inline _bb_vector_t _bb_vector_get(const void* ptr) {
   return vec;
 }
 
-const void* _bb_vector_new(size_t item_size, size_t capacity) {
+void* _bb_vector_new(size_t item_size, size_t capacity) {
   _bb_vector_t vec;
 
   bb_assert(item_size > 0);
@@ -979,33 +953,29 @@ const void* _bb_vector_new(size_t item_size, size_t capacity) {
   vec->length = 0;
   vec->checksum = _bb_vector_compute_checksum(vec);
 
-  // It hurts me to cast this to a const void*, but I really
-  // don't want people writing in to vector memory willy-nilly,
-  // so this should indicate to people that they should use `push` and `pop`
-  // instead, and only use direct access for accessing data.
   return vec + 1;
 }
 
-void _bb_vector_push(const void** vec_ptr, void* elem) {
+void* _bb_vector_push(void* vec_ptr, void* elem) {
   _bb_vector_t vec;
   void* raw_ptr;
 
   bb_assert(vec_ptr != NULL);
-  vec = _bb_vector_get(*vec_ptr);
+  vec = _bb_vector_get(vec_ptr);
   if (vec->length + 1 >= vec->capacity) {
     bb_assert((vec->capacity >> 31) == 0); // Ensure we don't overflow U32.
     vec->capacity <<= 1;
     vec = bb_realloc(vec, vec->capacity * vec->item_size + sizeof(*vec));
-    *vec_ptr = vec;
   }
 
-  raw_ptr = ((char*)*vec_ptr) + vec->item_size * vec->length++;
+  raw_ptr = ((char*)vec_ptr) + vec->item_size * vec->length++;
   memcpy(raw_ptr, elem, vec->item_size);
 
   vec->checksum = _bb_vector_compute_checksum(vec);
+  return vec + 1;
 }
 
-long bb_vector_pop(const void* vec_ptr, void* elem) {
+long bb_vector_pop(void* vec_ptr, void* elem) {
   _bb_vector_t vec = _bb_vector_get(vec_ptr);
   unsigned int len;
   void* raw_ptr;
@@ -1021,15 +991,15 @@ out:
   return len - 1;
 }
 
-size_t bb_vector_length(const void* vec_ptr) {
+size_t bb_vector_length(void* vec_ptr) {
   return _bb_vector_get(vec_ptr)->length;
 }
 
-size_t bb_vector_capacity(const void* vec_ptr) {
+size_t bb_vector_capacity(void* vec_ptr) {
   return _bb_vector_get(vec_ptr)->capacity;
 }
 
-void _bb_vector_destroy(const void** vec_ptr) {
+void _bb_vector_destroy(void** vec_ptr) {
   _bb_vector_t vec;
   bb_assert(vec_ptr != NULL);
   vec = _bb_vector_get(*vec_ptr);
